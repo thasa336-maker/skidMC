@@ -1929,7 +1929,18 @@ local function createOriginialElements()
 end
 
 function elementHandler:Remove()
-	self.GuiToRemove:Destroy()
+    local elementInstance = self.GuiToRemove
+    local container = elementInstance.Parent
+    
+    elementInstance:Destroy()
+    
+    -- Force the section to refresh its layout
+    if container and container:FindFirstChildOfClass("UIListLayout") then
+        local layout = container:FindFirstChildOfClass("UIListLayout")
+        -- Toggling a property forces the AbsoluteContentSize to update
+        layout.Enabled = false
+        layout.Enabled = true
+    end
 end
 
 --Add zindex var to determine which window goes over which
