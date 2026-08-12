@@ -1,13 +1,13 @@
 # ===================================================
-# TRIPWIRE – Mouse‑activated fake screen crack
+# TRIPWIRE – Self‑Destructing Fake Screen Crack
 # Dark tint, click‑through, always on top.
-# Disable: hold both Ctrl keys for 10 seconds
+# Disable & self‑destruct: hold both Ctrl keys for 10s
 # ===================================================
 
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
-# --- WinAPI for keyboard hook & window styling ---
+# --- WinAPI ---
 Add-Type @"
 using System;
 using System.Runtime.InteropServices;
@@ -38,7 +38,7 @@ public class WinAPI {
 }
 "@
 
-# --- Global variables ---
+# --- Globals ---
 $script:mouseMoved = $false
 $script:overlayShown = $false
 $script:crackForm = $null
@@ -49,6 +49,32 @@ $script:ctrlRightDown = $false
 $script:ctrlHoldStart = $null
 $script:exitRequested = $false
 
+# --- Self‑destruct function ---
+function SelfDestruct {
+    # Close the overlay
+    if ($script:crackForm) { $script:crackForm.Close() }
+
+    # Unhook keyboard
+    [WinAPI]::UnhookWindowsHookEx($script:hookPtr)
+
+    # Delete VBS launcher if it exists (from DuckyScript)
+    $vbsPath = "$env:TEMP\tripwire.vbs"
+    if (Test-Path $vbsPath) { Remove-Item -Path $vbsPath -Force -ErrorAction SilentlyContinue }
+
+    # Clear PowerShell command history
+    try {
+        Clear-History -ErrorAction SilentlyContinue
+        $historyPath = (Get-PSReadLineOption).HistorySavePath
+        if ($historyPath -and (Test-Path $historyPath)) {
+            Remove-Item -Path $historyPath -Force -ErrorAction SilentlyContinue
+        }
+    } catch {}
+
+    # Exit the application
+    [System.Windows.Forms.Application]::Exit()
+    [Environment]::Exit(0)
+}
+
 # --- Keyboard hook callback ---
 $script:keyboardProc = {
     param($nCode, $wParam, $lParam)
@@ -58,15 +84,14 @@ $script:keyboardProc = {
         $isKeyDown = $wParam -eq 0x0100 -or $wParam -eq 0x0104
         if ($vkCode -eq 0xA2) { $script:ctrlLeftDown = $isKeyDown }
         if ($vkCode -eq 0xA3) { $script:ctrlRightDown = $isKeyDown }
+
         if ($script:ctrlLeftDown -and $script:ctrlRightDown) {
             if (-not $script:ctrlHoldStart) { $script:ctrlHoldStart = Get-Date }
             else {
                 $elapsed = (Get-Date) - $script:ctrlHoldStart
                 if ($elapsed.TotalSeconds -ge 10) {
                     $script:exitRequested = $true
-                    [WinAPI]::UnhookWindowsHookEx($script:hookPtr)
-                    if ($script:crackForm) { $script:crackForm.Close() }
-                    [System.Windows.Forms.Application]::Exit()
+                    SelfDestruct
                     return [IntPtr]::Zero
                 }
             }
@@ -117,16 +142,15 @@ function Show-CrackOverlay {
     $form.WindowState = 'Maximized'
     $form.TopMost = $true
     $form.BackColor = 'Black'
-    $form.Opacity = 0.3            # dark tint – adjust to taste
+    $form.Opacity = 0.3
     $form.ControlBox = $false
     $form.ShowInTaskbar = $false
     $form.TopLevel = $true
-    # Add click‑through and other extended styles
+
     $hwnd = $form.Handle
     $style = [WinAPI]::GetWindowLong($hwnd, [WinAPI]::GWL_EXSTYLE)
     $style = $style -bor [WinAPI]::WS_EX_TRANSPARENT -bor [WinAPI]::WS_EX_NOACTIVATE -bor [WinAPI]::WS_EX_TOOLWINDOW
     [WinAPI]::SetWindowLong($hwnd, [WinAPI]::GWL_EXSTYLE, $style)
-    # Force topmost with SetWindowPos
     [WinAPI]::SetWindowPos($hwnd, [WinAPI]::HWND_TOPMOST, 0, 0, 0, 0, [WinAPI]::SWP_NOMOVE -bor [WinAPI]::SWP_NOSIZE -bor [WinAPI]::SWP_NOACTIVATE)
 
     $form.Add_Paint({
@@ -179,6 +203,5 @@ $delayTimer.Start()
 # --- Keep the script running ---
 [System.Windows.Forms.Application]::Run()
 
-# --- Cleanup ---
-[WinAPI]::UnhookWindowsHookEx($script:hookPtr)
-if ($script:crackForm) { $script:crackForm.Close() }
+# --- Cleanup (fallback) ---
+SelfDestruct
