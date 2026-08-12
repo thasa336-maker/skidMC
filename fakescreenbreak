@@ -1,0 +1,184 @@
+# ===================================================
+# TRIPWIRE – Mouse‑activated fake screen crack
+# Dark tint, click‑through, always on top.
+# Disable: hold both Ctrl keys for 10 seconds
+# ===================================================
+
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+
+# --- WinAPI for keyboard hook & window styling ---
+Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+public class WinAPI {
+    [DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)]
+    public static extern IntPtr SetWindowsHookEx(int idHook, LowLevelKeyboardProc lpfn, IntPtr hMod, uint dwThreadId);
+    [DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)]
+    public static extern bool UnhookWindowsHookEx(IntPtr hhk);
+    [DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)]
+    public static extern IntPtr CallNextHookEx(IntPtr hhk, int nCode, IntPtr wParam, IntPtr lParam);
+    [DllImport("kernel32.dll", CharSet = CharSet.Auto, SetLastError = true)]
+    public static extern IntPtr GetModuleHandle(string lpModuleName);
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern int SetWindowLong(IntPtr hWnd, int nIndex, int dwNewLong);
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern int GetWindowLong(IntPtr hWnd, int nIndex);
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);
+    public const int GWL_EXSTYLE = -20;
+    public const int WS_EX_TRANSPARENT = 0x20;
+    public const int WS_EX_NOACTIVATE = 0x08000000;
+    public const int WS_EX_TOOLWINDOW = 0x00000080;
+    public static readonly IntPtr HWND_TOPMOST = new IntPtr(-1);
+    public const uint SWP_NOMOVE = 0x0002;
+    public const uint SWP_NOSIZE = 0x0001;
+    public const uint SWP_NOACTIVATE = 0x0010;
+    public delegate IntPtr LowLevelKeyboardProc(int nCode, IntPtr wParam, IntPtr lParam);
+}
+"@
+
+# --- Global variables ---
+$script:mouseMoved = $false
+$script:overlayShown = $false
+$script:crackForm = $null
+$script:lastX = [System.Windows.Forms.Cursor]::Position.X
+$script:lastY = [System.Windows.Forms.Cursor]::Position.Y
+$script:ctrlLeftDown = $false
+$script:ctrlRightDown = $false
+$script:ctrlHoldStart = $null
+$script:exitRequested = $false
+
+# --- Keyboard hook callback ---
+$script:keyboardProc = {
+    param($nCode, $wParam, $lParam)
+    if ($nCode -ge 0) {
+        $vkCode = [System.Runtime.InteropServices.Marshal]::ReadInt32($lParam)
+        $flags = [System.Runtime.InteropServices.Marshal]::ReadInt32($lParam, 4)
+        $isKeyDown = $wParam -eq 0x0100 -or $wParam -eq 0x0104
+        if ($vkCode -eq 0xA2) { $script:ctrlLeftDown = $isKeyDown }
+        if ($vkCode -eq 0xA3) { $script:ctrlRightDown = $isKeyDown }
+        if ($script:ctrlLeftDown -and $script:ctrlRightDown) {
+            if (-not $script:ctrlHoldStart) { $script:ctrlHoldStart = Get-Date }
+            else {
+                $elapsed = (Get-Date) - $script:ctrlHoldStart
+                if ($elapsed.TotalSeconds -ge 10) {
+                    $script:exitRequested = $true
+                    [WinAPI]::UnhookWindowsHookEx($script:hookPtr)
+                    if ($script:crackForm) { $script:crackForm.Close() }
+                    [System.Windows.Forms.Application]::Exit()
+                    return [IntPtr]::Zero
+                }
+            }
+        } else {
+            $script:ctrlHoldStart = $null
+        }
+    }
+    return [WinAPI]::CallNextHookEx([IntPtr]::Zero, $nCode, $wParam, $lParam)
+}
+
+# --- Set keyboard hook ---
+$hookProc = [WinAPI+LowLevelKeyboardProc]{ $script:keyboardProc.Invoke($args) }
+$script:hookPtr = [WinAPI]::SetWindowsHookEx(13, $hookProc, [WinAPI]::GetModuleHandle($null), 0)
+
+# --- Mouse timer ---
+$mouseTimer = New-Object System.Windows.Forms.Timer
+$mouseTimer.Interval = 100
+$mouseTimer.Add_Tick({
+    $currentPos = [System.Windows.Forms.Cursor]::Position
+    if ($currentPos.X -ne $script:lastX -or $currentPos.Y -ne $script:lastY) {
+        $script:lastX = $currentPos.X
+        $script:lastY = $currentPos.Y
+        if (-not $script:mouseMoved) {
+            $script:mouseMoved = $true
+            $script:delayStart = Get-Date
+        }
+    }
+})
+
+# --- Delay timer ---
+$delayTimer = New-Object System.Windows.Forms.Timer
+$delayTimer.Interval = 100
+$delayTimer.Add_Tick({
+    if ($script:mouseMoved -and -not $script:overlayShown) {
+        $elapsed = (Get-Date) - $script:delayStart
+        if ($elapsed.TotalSeconds -ge 3) {
+            $script:overlayShown = $true
+            Show-CrackOverlay
+            $delayTimer.Stop()
+        }
+    }
+})
+
+# --- Create the crack overlay ---
+function Show-CrackOverlay {
+    $form = New-Object System.Windows.Forms.Form
+    $form.FormBorderStyle = 'None'
+    $form.WindowState = 'Maximized'
+    $form.TopMost = $true
+    $form.BackColor = 'Black'
+    $form.Opacity = 0.3            # dark tint – adjust to taste
+    $form.ControlBox = $false
+    $form.ShowInTaskbar = $false
+    $form.TopLevel = $true
+    # Add click‑through and other extended styles
+    $hwnd = $form.Handle
+    $style = [WinAPI]::GetWindowLong($hwnd, [WinAPI]::GWL_EXSTYLE)
+    $style = $style -bor [WinAPI]::WS_EX_TRANSPARENT -bor [WinAPI]::WS_EX_NOACTIVATE -bor [WinAPI]::WS_EX_TOOLWINDOW
+    [WinAPI]::SetWindowLong($hwnd, [WinAPI]::GWL_EXSTYLE, $style)
+    # Force topmost with SetWindowPos
+    [WinAPI]::SetWindowPos($hwnd, [WinAPI]::HWND_TOPMOST, 0, 0, 0, 0, [WinAPI]::SWP_NOMOVE -bor [WinAPI]::SWP_NOSIZE -bor [WinAPI]::SWP_NOACTIVATE)
+
+    $form.Add_Paint({
+        param($sender, $e)
+        $g = $e.Graphics
+        $pen = New-Object System.Drawing.Pen([System.Drawing.Color]::White, 6)
+        $width = $sender.ClientSize.Width
+        $height = $sender.ClientSize.Height
+        $midY = $height / 2
+        # Main jagged horizontal crack
+        $points = @()
+        $points += New-Object System.Drawing.Point(0, $midY)
+        $x = 20
+        while ($x -lt $width) {
+            $yOffset = (Get-Random -Minimum -40 -Maximum 40)
+            $points += New-Object System.Drawing.Point($x, $midY + $yOffset)
+            $x += (Get-Random -Minimum 15 -Maximum 35)
+        }
+        $points += New-Object System.Drawing.Point($width, $midY + (Get-Random -Minimum -40 -Maximum 40))
+        $g.DrawLines($pen, $points)
+        # Vertical cracks
+        for ($i = 0; $i -lt 30; $i++) {
+            $x = Get-Random -Minimum 50 -Maximum ($width - 50)
+            $y = $midY + (Get-Random -Minimum -150 -Maximum 150)
+            $len = Get-Random -Minimum 40 -Maximum 150
+            $angle = Get-Random -Minimum -60 -Maximum 60
+            $rad = $angle * [Math]::PI / 180
+            $dx = $len * [Math]::Cos($rad)
+            $dy = $len * [Math]::Sin($rad)
+            $g.DrawLine($pen, $x, $y, $x + $dx, $y + $dy)
+        }
+        # Shattered dots
+        for ($i = 0; $i -lt 100; $i++) {
+            $x = Get-Random -Minimum 0 -Maximum $width
+            $y = Get-Random -Minimum 0 -Maximum $height
+            if ([Math]::Abs($y - $midY) -lt 300) {
+                $size = Get-Random -Minimum 2 -Maximum 6
+                $g.FillEllipse([System.Drawing.Brushes]::White, $x, $y, $size, $size)
+            }
+        }
+    })
+    $form.Show()
+    $script:crackForm = $form
+}
+
+# --- Start timers ---
+$mouseTimer.Start()
+$delayTimer.Start()
+
+# --- Keep the script running ---
+[System.Windows.Forms.Application]::Run()
+
+# --- Cleanup ---
+[WinAPI]::UnhookWindowsHookEx($script:hookPtr)
+if ($script:crackForm) { $script:crackForm.Close() }
